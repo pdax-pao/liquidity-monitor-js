@@ -1,0 +1,25 @@
+{
+  "name": "liquidity-aggregator",
+  "version": "1.0.0",
+  "description": "Aggregates liquidity from multiple partners.",
+  "main": "src/handlers/liquidity-aggregator.js",
+  "scripts": {
+    "test": "jest"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.12.2",
+    "crypto": "^1.0.1",
+    "dotenv": "^16.6.1"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "coveragePathIgnorePatterns": [
+      "/node_modules/"
+    ]
+  }
+}

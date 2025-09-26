@@ -1,0 +1,39 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  liquidity-aggregator
+
+  SAM template for the liquidity aggregator Lambda function.
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 128
+
+Resources:
+  LiquidityAggregatorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: handlers/liquidity-aggregator.handler
+      Runtime: nodejs20.x
+      Architectures:
+        - x86_64
+      # In a real deployment, you would pass secure parameters from SSM or Secrets Manager
+      # instead of using a .env file. The ssm-client.js in your structure suggests this.
+      # Environment:
+      #   Variables:
+      #     FALCONX_API_KEY: '{{resolve:ssm:/liquidity-aggregator/falconx/api-key:1}}'
+      #     FALCONX_API_SECRET: '{{resolve:ssm:/liquidity-aggregator/falconx/api-secret:1}}'
+      #     # ... and so on for other secrets
+      Events:
+        ApiEvent:
+          Type: HttpApi
+          Properties:
+            Path: /aggregate
+            Method: get
+
+Outputs:
+  LiquidityApiEndpoint:
+    Description: "API Gateway endpoint URL for the Liquidity Aggregator function"
+    Value: !Sub "https://execute-api.${AWS::Region}.amazonaws.com/aggregate"
