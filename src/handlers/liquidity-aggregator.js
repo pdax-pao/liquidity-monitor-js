@@ -1,91 +1,74 @@
-const { handler } = require('../src/handlers/liquidity-aggregator');
+// Import your service modules. We'll add more as they are created.
+// Since falconx is working, you'll need to create a `falconx.js` file similar to `aquanow.js`.
+const falconxService = require('../services/falconx'); 
+// const aquanowService = require('../services/aquanow');
+// const fireblocksService = require('../services/fireblocks');
+// const talosService = require('../services/talos');
 
-// --- 1. MOCK ALL SERVICE MODULES ---
-// This replaces the real services with fakes that we can control in our tests.
-jest.mock('../src/services/falconx');
-jest.mock('../src/services/fireblocks');
-jest.mock('../src/services/talos');
-jest.mock('../src/services/aquanow');
+/**
+ * Main handler for the Lambda function. It orchestrates fetching data
+ * from all liquidity partners concurrently.
+ */
+exports.handler = async (event) => {
+    // Define all the partner services to be called.
+    // For now, we'll use the Aquanow mock service.
+    const partnerServices = [
+        { name: 'FalconX', service: falconxService.getExecutedQuotes },
+        // { name: 'Aquanow', service: aquanowService.getOrders }
+        // Add other services here as you build them.
+    ];
 
-// Import the mocked services
-const falconxService = require('../src/services/falconx');
-const fireblocksService = require('../src/services/fireblocks');
-const talosService = require('../src/services/talos');
-const aquanowService = require('../src/services/aquanow');
+    console.log('Starting liquidity aggregation for all partners...');
 
-// --- (Optional but Recommended) PREPARE FOR REAL JSON DATA ---
-// When you get a real JSON blob, you can save it in a file like 'tests/mock-data/aquanow-success.json'
-// and then import it like this:
-// const mockAquanowSuccess = require('./mock-data/aquanow-success.json');
+    // We use Promise.allSettled to run every service call at the same time.
+    // This is very efficient and ensures that a failure in one service
+    // does not stop the others from completing.
+    const promises = partnerServices.map(p => p.service(new Date(), new Date())); // Using placeholder dates
+    const results = await Promise.allSettled(promises);
 
+    const successfulPartners = [];
+    const failedPartners = [];
+    const aggregatedData = {}; // We will store all data in this object
 
-describe('Liquidity Aggregator Handler', () => {
+    // Now, we process the results from each service call.
+    results.forEach((result, index) => {
+        const partner = partnerServices[index];
+        
+        if (result.status === 'fulfilled' && result.value.status === 'success') {
+            console.log(`Successfully fetched data from ${partner.name}.`);
+            successfulPartners.push(partner.name);
+            // Add the successful data to our main JSON blob, keyed by partner name.
+            aggregatedData[partner.name] = result.value.data;
 
-    // This function runs before each test, ensuring a clean state.
-    beforeEach(() => {
-        jest.clearAllMocks();
+        } else {
+            // This block catches any failures.
+            const reason = result.reason ? (result.reason.error || result.reason.message) : (result.value && result.value.error);
+            console.error(`Failed to fetch data from ${partner.name}:`, reason);
+            failedPartners.push({
+                partner: partner.name,
+                reason: reason || 'Unknown error'
+            });
+        }
     });
 
-    // --- 2. DEFINE TEST CASES ---
+    // This is the final JSON blob that the Lambda will output.
+    const responsePayload = {
+        message: 'Aggregation process completed.',
+        summary: {
+            successful: successfulPartners.length,
+            failed: failedPartners.length,
+        },
+        successfulPartners,
+        failedPartners,
+        data: aggregatedData
+    };
 
-    test('should aggregate data successfully when all partners respond', async () => {
-        // ARRANGE: Define the return values for our mocked services.
-        falconxService.getExecutedQuotes.mockResolvedValue({
-            partner: 'FalconX', status: 'success', data: [{ tradeId: 'fx1' }]
-        });
-        fireblocksService.getTransactions.mockResolvedValue({
-            partner: 'Fireblocks', status: 'success', data: [{ transactionId: 'fb1' }]
-        });
-        talosService.getTrades.mockResolvedValue({
-            partner: 'Talos', status: 'success', data: [{ tradeId: 'talos1' }]
-        });
-        // Here you could use your real data blob like this:
-        // aquanowService.getOrders.mockResolvedValue({
-        //     partner: 'Aquanow', status: 'success', data: mockAquanowSuccess
-        // });
-        aquanowService.getOrders.mockResolvedValue({
-            partner: 'Aquanow', status: 'success', data: [{ orderId: 'aq1' }]
-        });
-
-
-        // ACT: Call the handler with an empty event object.
-        const result = await handler({});
-        const body = JSON.parse(result.body);
-
-        // ASSERT: Check if the output is correct.
-        expect(result.statusCode).toBe(200);
-        expect(body.successfulPartners).toHaveLength(4);
-        expect(body.failedPartners).toHaveLength(0);
-        expect(body.data).toHaveLength(4); // 1 item from each partner
-    });
-
-    test('should handle partial failures gracefully', async () => {
-        // ARRANGE: Simulate success from some partners and failure from others.
-        falconxService.getExecutedQuotes.mockResolvedValue({
-            partner: 'FalconX', status: 'success', data: [{ tradeId: 'fx1' }]
-        });
-        aquanowService.getOrders.mockResolvedValue({
-            partner: 'Aquanow', status: 'success', data: [{ orderId: 'aq1' }]
-        });
-        fireblocksService.getTransactions.mockResolvedValue({ // A failure reported by the service itself
-            partner: 'Fireblocks', status: 'error', error: 'Invalid API Key'
-        });
-        talosService.getTrades.mockRejectedValue({ // A complete promise rejection (e.g., network error)
-            partner: 'Talos', error: 'Connection Timeout'
-        });
-
-        // ACT
-        const result = await handler({});
-        const body = JSON.parse(result.body);
-
-        // ASSERT
-        expect(result.statusCode).toBe(200);
-        expect(body.successfulPartners).toEqual(['FalconX', 'Aquanow']);
-        expect(body.failedPartners).toHaveLength(2);
-        expect(body.data).toHaveLength(2); // Only data from successful partners
-        expect(body.failedPartners).toContainEqual({
-            partner: 'Fireblocks',
-            reason: 'Invalid API Key'
-        });
-    });
-});
+    // Return the response in the format required by API Gateway.
+    return {
+        statusCode: 200,
+        headers: {
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify(responsePayload, null, 2), // Pretty-print for readability
+    };
+};
