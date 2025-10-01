@@ -9,6 +9,48 @@ const apiSecret = process.env.TALOS_API_SECRET;
 const host = process.env.TALOS_API_HOST;
 
 /**
+ * Creates the authentication headers required for a Talos API request.
+ * @param {string} path - The request path (e.g., '/v1/execution-reports').
+ * @param {string} query - The URL query string (e.g., 'StartDate=...&EndDate=...').
+ * @returns {object} An object containing the TALOS-KEY, TALOS-TS, and TALOS-SIGN headers.
+ */
+const createAuthHeaders = (path, query) => {
+    // FIX 2: Generate a timestamp with microsecond-level formatting.
+    // JavaScript's Date object is only precise to milliseconds.
+    // We format the ISO string to show 6 decimal places for seconds as some APIs require.
+    const now = new Date();
+    const timestamp = now.toISOString().replace('Z', '000Z'); // Turns '.123Z' into '.123000Z'
+
+    // Construct the payload that will be signed. The order is critical.
+    const params = [
+        'GET',
+        timestamp, // Use the exact microsecond-formatted timestamp
+        host,
+        path,
+        query
+    ];
+    const payloadToSign = params.join('\n');
+
+    // Create the signature using standard base64 encoding.
+    const signature = crypto
+        .createHmac('sha256', apiSecret)
+        .update(payloadToSign)
+        .digest('base64');
+
+    // FIX 1: Convert the standard base64 signature to be URL-safe
+    // by replacing '+' with '-' and '/' with '_'.
+    const urlSafeSignature = signature.replace(/\+/g, '-').replace(/\//g, '_');
+
+    // Return the headers object.
+    return {
+        'TALOS-KEY': apiKey,
+        'TALOS-TS': timestamp,
+        'TALOS-SIGN': urlSafeSignature,
+    };
+};
+
+
+/**
  * Generates a timestamp, signs the payload, and sends a request to the Talos API.
  */
 function sendTalosRequest() {
@@ -17,41 +59,26 @@ function sendTalosRequest() {
 
     const path = '/v1/execution-reports';
 
-    // This is the timestamp that will be used
+    // --- Define the query parameters ---
     const now = new Date();
     const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
-    const utcNow = now.toISOString().replace(/\.\d{3}Z$/, '.000000Z');
-    const utcFiveMinutesAgo = fiveMinutesAgo.toISOString().replace(/\.\d{3}Z$/, '.000000Z');
+    // Note: The timestamp for the query does not need microsecond formatting.
+    const utcNow = now.toISOString();
+    const utcFiveMinutesAgo = fiveMinutesAgo.toISOString();
 
     const query = `StartDate=${utcFiveMinutesAgo}&EndDate=${utcNow}`;
 
-    // 'utcNow' is placed directly into the array to be hashed
-    const params = [
-        'GET',
-        utcNow,
-        host,
-        path,
-        query
-    ];
-    const payload = params.join('\n');
-
-    const hash = crypto.createHmac('sha256', Buffer.from(apiSecret, 'ascii'));
-    hash.update(Buffer.from(payload, 'ascii'));
-    const signature = hash.digest('base64url');
+    // --- Generate authentication headers using the new function ---
+    const authHeaders = createAuthHeaders(path, query);
 
     const options = {
         hostname: host,
         path: `${path}?${query}`,
         method: 'GET',
-        headers: {
-            'TALOS-KEY': apiKey,
-            'TALOS-SIGN': signature,
-            'TALOS-TS': utcNow,
-        }
+        headers: authHeaders // Use the newly generated headers here
     };
 
-    // This line logs the exact timestamp used in the hash
-    console.log(`🔷 Timestamp for Hash (TALOS-TS): ${utcNow}`);
+    console.log(`🔷 Timestamp for Hash (TALOS-TS): ${authHeaders['TALOS-TS']}`);
     console.log(`🚀 Sending request to: https://${options.hostname}${options.path}`);
 
     const req = https.request(options, (res) => {

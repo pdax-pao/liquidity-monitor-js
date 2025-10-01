@@ -1,78 +1,127 @@
-const axios = require('axios');
+// --- Import dotenv and configure it to look one directory up ---
+require('dotenv').config({ path: '../.env' });
+const https = require('https' );
 const crypto = require('crypto');
-// dotenv is already configured in the test file, so no need to call config() here.
 
-// Load credentials and configuration from environment variables
-const { TALOS_API_KEY, TALOS_API_SECRET, TALOS_API_URL } = process.env;
+// --- Load credentials from environment variables ---
+const apiKey = process.env.TALOS_API_KEY;
+const apiSecret = process.env.TALOS_API_SECRET;
+const host = process.env.TALOS_API_HOST;
 
 /**
- * Creates the necessary authentication headers for a Talos API request.
- * @param {string} path - The API endpoint path (e.g., '/v1/execution-reports').
- * @param {string} query - The query string for the request.
- * @returns {object} The headers object for the API request.
+ * Creates the authentication headers required for a Talos API request.
+ * @param {string} path - The request path (e.g., '/v1/execution-reports').
+ * @param {string} query - The URL query string (e.g., 'StartDate=...&EndDate=...').
+ * @returns {object} An object containing the TALOS-KEY, TALOS-TS, and TALOS-SIGN headers.
  */
 const createAuthHeaders = (path, query) => {
-    const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, '.000000Z');
-    const host = new URL(TALOS_API_URL).host;
+    // FIX 2: Generate a timestamp with microsecond-level formatting.
+    // JavaScript's Date object is only precise to milliseconds.
+    // We format the ISO string to show 6 decimal places for seconds as some APIs require.
+    const now = new Date();
+    const timestamp = now.toISOString().replace('Z', '000Z'); // Turns '.123Z' into '.123000Z'
 
-    let payloadToSign = ['GET', timestamp, host, path];
-    if (query) {
-        payloadToSign.push(query);
-    }
-    const signaturePayload = payloadToSign.join('\n');
+    // Construct the payload that will be signed. The order is critical.
+    const params = [
+        'GET',
+        timestamp, // Use the exact microsecond-formatted timestamp
+        host,
+        path,
+        query
+    ];
+    const payloadToSign = params.join('\n');
 
+    // Create the signature using standard base64 encoding.
     const signature = crypto
-        .createHmac('sha256', TALOS_API_SECRET)
-        .update(signaturePayload)
+        .createHmac('sha256', apiSecret)
+        .update(payloadToSign)
         .digest('base64');
 
+    // FIX 1: Convert the standard base64 signature to be URL-safe
+    // by replacing '+' with '-' and '/' with '_'.
+    const urlSafeSignature = signature.replace(/\+/g, '-').replace(/\//g, '_');
+
+    // Return the headers object.
     return {
-        'TALOS-KEY': TALOS_API_KEY,
+        'TALOS-KEY': apiKey,
         'TALOS-TS': timestamp,
-        'TALOS-SIGN': signature,
+        'TALOS-SIGN': urlSafeSignature,
     };
 };
 
+
 /**
- * Fetches executed trades from the last 15 minutes from Talos.
- * This is the function our test will call.
+ * Generates a timestamp, signs the payload, and sends a request to the Talos API.
  */
-const getTrades = async () => {
-    try {
-        const now = new Date();
-        const fifteenMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
+function sendTalosRequest() {
+    const startTime = new Date();
+    console.log(`⏱️  Execution Start Time: ${startTime.toISOString()}`);
 
-        const startDate = fifteenMinutesAgo.toISOString();
-        const endDate = now.toISOString();
+    const path = '/v1/execution-reports';
 
-        const path = '/v1/execution-reports';
-        const query = `StartDate=${startDate}&EndDate=${endDate}`;
-        const headers = createAuthHeaders(path, query);
-        
-        const response = await axios.get(`${TALOS_API_URL}${path}?${query}`, { headers });
-        
-        // Filter for reports that indicate a trade (fill)
-        const filledOrders = response.data.data.filter(report => report.ExecType === 'Trade');
+    // --- Define the query parameters ---
+    const now = new Date();
+    const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
+    // Note: The timestamp for the query does not need microsecond formatting.
+    const utcNow = now.toISOString();
+    const utcFiveMinutesAgo = fiveMinutesAgo.toISOString();
 
-        // Return data in the format expected by the aggregator
-        return {
-            partner: 'Talos',
-            status: 'success',
-            data: filledOrders
-        };
+    const query = `StartDate=${utcFiveMinutesAgo}&EndDate=${utcNow}`;
 
-    } catch (error) {
-        console.error('Error in Talos service:', error.response ? error.response.data : error.message);
-        // Return an error object in the expected format
-        return {
-            partner: 'Talos',
-            status: 'error',
-            error: error.response ? error.response.data : error.message,
-        };
-    }
-};
+    // --- Generate authentication headers using the new function ---
+    const authHeaders = createAuthHeaders(path, query);
 
-// We must export the function so other files can import and use it.
-module.exports = {
-    getTrades
-};
+    const options = {
+        hostname: host,
+        path: `${path}?${query}`,
+        method: 'GET',
+        headers: authHeaders // Use the newly generated headers here
+    };
+
+    console.log(`🔷 Timestamp for Hash (TALOS-TS): ${authHeaders['TALOS-TS']}`);
+    console.log(`🚀 Sending request to: https://${options.hostname}${options.path}`);
+
+    const req = https.request(options, (res) => {
+        console.log(`statusCode: ${res.statusCode}`);
+        let data = '';
+
+        res.on('data', (chunk) => {
+            data += chunk;
+        });
+
+        res.on('end', () => {
+            const endTime = new Date();
+            console.log(`🏁 Execution End Time:   ${endTime.toISOString()}`);
+            const duration = endTime - startTime;
+            console.log(`⏳ Total Duration:       ${duration} ms`);
+
+            console.log('--- Raw API Response ---');
+            console.log(data);
+            console.log('------------------------');
+
+            try {
+                const jsonData = JSON.parse(data);
+                console.log('--- Formatted JSON (if applicable) ---');
+                console.log(JSON.stringify(jsonData, null, 2));
+                console.log('--------------------------------------');
+            } catch (e) {
+                console.log('(Response was not valid JSON)');
+            }
+        });
+    });
+
+    req.on('error', (error) => {
+        console.error('--- Request Error ---');
+        console.error(error);
+    });
+
+    req.end();
+}
+
+// --- Script Execution Starts Here ---
+if (!apiKey || !apiSecret || !host) {
+    console.error('Error: Make sure TALOS_API_KEY, TALOS_API_SECRET, and TALOS_API_HOST are set in your ../.env file');
+    process.exit(1);
+}
+
+sendTalosRequest();

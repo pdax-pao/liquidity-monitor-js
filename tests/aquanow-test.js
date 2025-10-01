@@ -6,13 +6,38 @@ const axios = require('axios');
 const crypto = require('crypto');
 
 // --- Configuration ---
-// Credentials are now loaded from the .env file
 const API_KEY = process.env.AQUANOW_API_KEY;
 const API_SECRET = process.env.AQUANOW_API_SECRET;
 const BASE_URL = process.env.AQUANOW_BASE_URL;
 
 // API endpoint for getting transactions
 const ENDPOINT = "/accounts/v1/transaction";
+
+/**
+ * Creates the authentication headers for an Aquanow API request.
+ * @param {string} requestUrl - The request path including query parameters (e.g., '/accounts/v1/transaction?startTime=...').
+ * @returns {object} An object containing the x-api-key, x-signature, and x-nonce headers.
+ */
+const createAquanowAuthHeaders = (requestUrl) => {
+    // A nonce is a unique number for each request; using the current timestamp in milliseconds is a common practice.
+    const nonce = Date.now().toString();
+
+    // The message to be signed is the nonce concatenated with the request URL.
+    const message = nonce + requestUrl;
+
+    // The signature is an HMAC-SHA256 hash of the message, encoded in hexadecimal.
+    const signature = crypto
+        .createHmac('sha256', API_SECRET)
+        .update(message)
+        .digest('hex');
+
+    // Return the complete headers object.
+    return {
+        "x-api-key": API_KEY,
+        "x-signature": signature,
+        "x-nonce": nonce
+    };
+};
 
 /**
  * Fetches all transactions from the last 10 minutes from the Aquanow API.
@@ -24,27 +49,12 @@ async function getTransactionsLast10Minutes() {
     // Calculate the time 10 minutes ago in milliseconds
     const tenMinutesAgoMs = currentTimeMs - (10 * 60 * 1000);
     
-    // Nonce must be a string for the signature
-    const nonce = currentTimeMs.toString();
-    
     // --- Create the request URL with the startTime parameter ---
     const requestUrl = `${ENDPOINT}?startTime=${tenMinutesAgoMs}&limit=1000`;
     
-    // --- Generate the signature for authentication ---
-    const message = nonce + requestUrl;
-    
-    const signature = crypto
-        .createHmac('sha256', API_SECRET)
-        .update(message)
-        .digest('hex');
+    // --- Generate authentication headers using the new helper function ---
+    const headers = createAquanowAuthHeaders(requestUrl);
         
-    // --- Set up the request headers ---
-    const headers = {
-        "x-api-key": API_KEY,
-        "x-signature": signature,
-        "x-nonce": nonce
-    };
-    
     // --- Make the API request ---
     try {
         console.log("Requesting transactions from the last 10 minutes...");
